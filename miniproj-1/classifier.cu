@@ -35,18 +35,31 @@ void classifier_layer(VTYPE synapse[Nn][Ni],
   }
 }
 
+
+__global__ void GPU_classifier_layer(VTYPE synapse[Nn][Ni],
+                                     VTYPE neuron_i[Ni],
+                                     VTYPE neuron_n[Nn]) {
+  for (int n = 0; n < Nn; n++) {
+    VTYPE temp = 0;
+    for (int i = 0; i < Ni; i++) {
+      temp += synapse[n][i] * neuron_i[i];
+    }
+    neuron_n[n] = GPU_transfer(temp);
+  }
+}
+
 void classifier_layer_blocked(VTYPE synapse[Nn][Ni],
                               VTYPE neuron_i[Ni], 
                               VTYPE neuron_n[Nn]) {
   VTYPE sum[Nn] = {};
-  for (int nnn = 0; nnn < Nn; nnn += Tnn) { // tiling for output neurons;
-    for (int iii = 0; iii < Ni; iii += Tii) { // tiling for input neurons;
-      for (int nn = nnn; nn < nnn + Tnn; nn += Tn) {
-        for (int ii = iii; ii < iii + Tii; ii += Ti) {
+  for (int outer_n = 0; outer_n < Nn; outer_n += Tnn) { // tiling for output neurons;
+    for (int outer_i = 0; outer_i < Ni; outer_i += Tii) { // tiling for input neurons;
+      for (int inner_n = outer_n; inner_n < outer_n + Tnn; inner_n += Tn) {
+        for (int inner_i = outer_i; inner_i < iii + Tii; inner_i += Ti) {
           // Original code
-          for (int n = nn; n < nn + Tn; n++) {
+          for (int n = inner_n; n < inner_n + Tn; n++) {
             VTYPE sum_sc = 0;
-            for (int i = ii; i < ii + Ti; i++) {
+            for (int i = inner_i; i < inner_i + Ti; i++) {
               sum_sc += synapse[n][i] * neuron_i[i];
             }
             sum[n] += sum_sc;
@@ -54,8 +67,8 @@ void classifier_layer_blocked(VTYPE synapse[Nn][Ni],
         }
       }
     }
-    for (int nn = nnn; nn < nnn + Tnn; nn++) {
-      neuron_n[nn] = transfer(sum[nn]);
+    for (int n = outer_n; n < outer_n + Tnn; n++) {
+      neuron_n[n] = transfer(sum[n]);
     }
   }
 }

@@ -1,6 +1,5 @@
 #include <iostream>
 #include <string>
-#include <random>
 #include <functional>
 #include "dnn.hpp"
 
@@ -30,20 +29,10 @@ using namespace std;
 
 #define SYNAPSE_SIZE (1L*Ky*Kx*Nn*Ni)
 
-
 VTYPE (*synapse)[Ky][Kx][Nn][Ni];
 VTYPE (*neuron_i)[NYPAD][NXPAD][Ni];
 VTYPE (*neuron_n)[NYSCL][NXSCL][Nn];
 VTYPE (*neuron_n2)[NYSCL][NXSCL][Nn];
-
-void fill_random(VTYPE *array, size_t size) {
-  std::random_device rd;
-  std::mt19937_64 gen(rd());
-  std::uniform_real_distribution<> dis(-0.5, 0.5);
-  for(size_t i = 0; i < size; ++i) {
-    array[i] = dis(gen);
-  }
-}
 
 void convolution_layer_blocked(VTYPE synapse[Ky][Kx][Nn][Ni], 
                                VTYPE neuron_i[NYPAD][NXPAD][Ni], 
@@ -60,9 +49,7 @@ void convolution_layer_blocked(VTYPE synapse[Ky][Kx][Nn][Ni],
           for (int x = xx; x < xx + Tx; x += Sx) { // tiling for x;
 
             for (int nn = nnn; nn < nnn + Tnn; nn += Tn) {
-              for (int n = nn; n < nn + Tn; n++) {
-                sum[n] = 0;
-              }
+              memset(sum + nn, 0, Tn * sizeof(VTYPE));
 
               for (int ky = 0; ky < Ky; ky++) {  // sliding window;
                 for (int kx = 0; kx < Kx; kx++) {
@@ -108,9 +95,7 @@ void convolution_layer(VTYPE synapse[Ky][Kx][Nn][Ni],
     int xout = 0;
     for (int x = 0; x < Ny; x += Sx) { // tiling for x;
       for (int nn = 0; nn < Nn; nn += Tn) {
-        for (int n = nn; n < nn + Tn; n++) {
-          sum[n]=0;
-        }
+        memset(sum + nn, 0, Tn * sizeof(VTYPE));
 
         for (int ky = 0; ky < Ky; ky++)
           for (int kx = 0; kx < Kx; kx++)
@@ -118,7 +103,7 @@ void convolution_layer(VTYPE synapse[Ky][Kx][Nn][Ni],
               for (int i = 0; i < Ni; i++) {
                 VTYPE sv = synapse[ky][kx][n][i];
                 VTYPE nv = neuron_i[ky + y][kx + x][i];
-                sum[n]+=sv*nv;
+                sum[n] += sv * nv;
               }
         for (int n = nn; n < nn + Tn; n++) {
           neuron_n[yout][xout][n] = transfer(sum[n]);
@@ -144,7 +129,7 @@ void GPU_convolution_layer(VTYPE synapse[Ky][Kx][Nn][Ni],
     for (int x = 0; x < Ny; x += Sx) { // tiling for x;
       for (int nn = 0; nn < Nn; nn += Tn) {
         for (int n = nn; n < nn + Tn; n++) {
-          sum[n]=0;
+          sum[n] = 0;
         }
 
         // sliding window;
@@ -154,7 +139,7 @@ void GPU_convolution_layer(VTYPE synapse[Ky][Kx][Nn][Ni],
               for (int i = 0; i < Ni; i++) {
                 VTYPE sv = synapse[ky][kx][n][i];
                 VTYPE nv = neuron_i[ky + y][kx + x][i];
-                sum[n]+=sv*nv;
+                sum[n] += sv * nv;
               }
         for (int n = nn; n < nn + Tn; n++) {
           neuron_n[yout][xout][n] = GPU_transfer(sum[n]);
@@ -167,27 +152,27 @@ void GPU_convolution_layer(VTYPE synapse[Ky][Kx][Nn][Ni],
 }
 
 int main(void) {
-  cout << "------ Running CPU version ------" << std::endl;
+  std::cout << "------ Running CPU version ------" << std::endl;
 
   synapse = (VTYPE (*)[Ky][Kx][Nn][Ni]) aligned_alloc(64, SYNAPSE_SIZE * sizeof(VTYPE));
   neuron_i = (VTYPE (*)[NYPAD][NXPAD][Ni]) aligned_alloc(64, NYPAD * NXPAD * Ni * sizeof(VTYPE));
   neuron_n = (VTYPE (*)[NYSCL][NXSCL][Nn]) aligned_alloc(64, NYSCL * NXSCL * Nn * sizeof(VTYPE));
   neuron_n2 = (VTYPE (*)[NYSCL][NXSCL][Nn]) aligned_alloc(64, NYSCL * NXSCL * Nn * sizeof(VTYPE));
 
-  fill_random((VTYPE*) synapse, SYNAPSE_SIZE);
-  fill_random((VTYPE*) neuron_i, NXPAD * NYPAD * Ni);
+  fill_random((VTYPE *) synapse, SYNAPSE_SIZE);
+  fill_random((VTYPE *) neuron_i, NXPAD * NYPAD * Ni);
 
-  cout << "Simple version:" << std::endl;
+  std::cout << "Simple version: \t";
   auto f1 = std::bind(convolution_layer, *synapse, *neuron_i, *neuron_n);
   timeit(f1);
 
-  cout << "Blocked version:" << std::endl;  
+  std::cout << "Blocked version:\t";  
   auto f2 = std::bind(convolution_layer_blocked, *synapse, *neuron_i, *neuron_n2);
   timeit(f2);
 
-  compare((VTYPE*) neuron_n, (VTYPE*) neuron_n2, NYSCL * NXSCL * Nn);
+  compare((VTYPE *) neuron_n, (VTYPE *) neuron_n2, NYSCL * NXSCL * Nn);
 
-  cout << "------ Running GPU version ------" << std::endl;
+  std::cout << "------ Running GPU version ------" << std::endl;
 }
 
 

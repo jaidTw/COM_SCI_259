@@ -1,7 +1,6 @@
 #include <iostream>
+#include <functional>
 #include "dnn.hpp"
-
-using namespace std;
 
 //Define the parameters if not defined externally
 #ifndef Nn
@@ -24,27 +23,9 @@ VTYPE neuron_i[Ni] __attribute__((aligned(64)));
 VTYPE neuron_n[Nn] __attribute__((aligned(64)));
 VTYPE neuron_n2[Nn] __attribute__((aligned(64)));
 
-void fill_classifier(VTYPE (&synapse)[Nn][Ni],
-                     VTYPE (&neuron_i)[Ni], 
-                     VTYPE (&neuron_n)[Nn],
-                     VTYPE (&neuron_n2)[Nn]) {
-  for(int n = 0; n < Nn; ++n) {
-    for(int i = 0; i < Ni; ++i) {
-      synapse[n][i] = static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5f;
-    }
-  }
-  for(int i = 0; i < Ni; ++i) {
-    neuron_i[i] = static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5f;
-  }
-  for(int n = 0; n < Nn; ++n) {
-    neuron_n[n] = 0; //i;
-    neuron_n2[n] = 0; //i;
-  }
-}
-
-void classifier_layer(VTYPE (&synapse)[Nn][Ni],
-                      VTYPE (&neuron_i)[Ni],
-                      VTYPE (&neuron_n)[Nn]) {
+void classifier_layer(VTYPE synapse[Nn][Ni],
+                      VTYPE neuron_i[Ni],
+                      VTYPE neuron_n[Nn]) {
   for (int n = 0; n < Nn; n++) {
     VTYPE temp = 0;
     for (int i = 0; i < Ni; i++) {
@@ -54,21 +35,21 @@ void classifier_layer(VTYPE (&synapse)[Nn][Ni],
   }
 }
 
-void classifier_layer_blocked(VTYPE (&synapse)[Nn][Ni],
-                              VTYPE (&neuron_i)[Ni], 
-                              VTYPE (&neuron_n)[Nn]) {
+void classifier_layer_blocked(VTYPE synapse[Nn][Ni],
+                              VTYPE neuron_i[Ni], 
+                              VTYPE neuron_n[Nn]) {
   VTYPE sum[Nn] = {};
   for (int nnn = 0; nnn < Nn; nnn += Tnn) { // tiling for output neurons;
     for (int iii = 0; iii < Ni; iii += Tii) { // tiling for input neurons;
       for (int nn = nnn; nn < nnn + Tnn; nn += Tn) {
         for (int ii = iii; ii < iii + Tii; ii += Ti) {
-          // — Original code —
+          // Original code
           for (int n = nn; n < nn + Tn; n++) {
-            VTYPE sum_sc=0;
+            VTYPE sum_sc = 0;
             for (int i = ii; i < ii + Ti; i++) {
-              sum_sc += (synapse[n][i] * neuron_i[i]);
+              sum_sc += synapse[n][i] * neuron_i[i];
             }
-            sum[n]+=sum_sc;
+            sum[n] += sum_sc;
           }
         }
       }
@@ -80,26 +61,25 @@ void classifier_layer_blocked(VTYPE (&synapse)[Nn][Ni],
 }
 
 int main(void) {
-  cout << "initializing arrays\n";
+  std::cout << "------ Running CPU version ------" << std::endl;
 
-  fill_classifier(synapse,neuron_i,neuron_n,neuron_n2);
+  fill_random((VTYPE *) synapse, Nn * Ni);
+  fill_random((VTYPE *) neuron_i, Ni);
+  memset(neuron_n, 0, Nn * sizeof(VTYPE));
+  memset(neuron_n2, 0, Nn * sizeof(VTYPE));
 
-  cout << "starting computation\n";
+  std::cout << "Simple version: \t";
+  auto f1 = std::bind(classifier_layer, synapse, neuron_i, neuron_n);
+  timeit(f1);
 
-  begin_roi();
-  classifier_layer(synapse,neuron_i,neuron_n);
-  end_roi();
+  std::cout << "Blocked version:\t";  
+  auto f2 = std::bind(classifier_layer_blocked, synapse, neuron_i, neuron_n2);
+  timeit(f2);
 
-  cout << "simple version complete!\n";  
+  compare(neuron_n, neuron_n2, Nn);
 
-  begin_roi();
-  classifier_layer_blocked(synapse,neuron_i,neuron_n2);  
-  end_roi();
+  std::cout << "------ Running GPU version ------" << std::endl;
 
-  cout << "blocked computation complete!\n";  
-
-  compare(neuron_n,neuron_n2,Nn);
-
-  cout << "done\n";
+  /* TODO: GPU version*/
 }
 

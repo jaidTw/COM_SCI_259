@@ -1,5 +1,6 @@
 #pragma once
 
+#include <random>
 #include <iostream>
 #include <cstdlib>
 #include <chrono>
@@ -7,11 +8,20 @@
 
 #define VTYPE float
 
+void fill_random(VTYPE *array, size_t size) {
+  std::random_device rd;
+  std::mt19937_64 gen(rd());
+  std::uniform_real_distribution<> dis(-0.5, 0.5);
+  for(size_t i = 0; i < size; ++i) {
+    array[i] = dis(gen);
+  }
+}
+
 __attribute__ ((noinline)) void timeit(std::function<void ()> f) {
   auto start = std::chrono::high_resolution_clock::now();
   f();
   std::chrono::duration<double> diff = std::chrono::high_resolution_clock::now() - start;
-  std::cout << "elapsed (sec): " << diff.count() << std::endl;
+  std::cout << diff.count() << " sec(s) elapsed." << std::endl;
 }
 
 // Is this a leaky relu?

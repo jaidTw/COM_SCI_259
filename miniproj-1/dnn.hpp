@@ -24,6 +24,21 @@ __attribute__ ((noinline)) void timeit(std::function<void ()> f) {
   std::cout << diff.count() << " sec(s) elapsed." << std::endl;
 }
 
+template <typename F>
+__attribute__ ((noinline)) void timeit(F f) {
+  cudaEvent_t start, stop;
+  cudaEventCreate(&start);
+  cudaEventCreate(&stop);
+  cudaEventRecord(start);
+  f();
+  cudaEventRecord(stop);
+  cudaEventSynchronize(stop);
+
+  float exec_time;
+  cudaEventElapsedTime(&exec_time, start, stop);
+  std::cout << exec_time << " sec(s) elapsed." << std::endl;
+}
+
 // Is this a leaky relu?
 VTYPE transfer(VTYPE i) {
   return (i > 0) ? i : i / 4;

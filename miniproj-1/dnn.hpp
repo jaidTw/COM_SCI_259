@@ -36,7 +36,9 @@ __attribute__ ((noinline)) void CUDA_timeit(F f) {
 
   float exec_time;
   cudaEventElapsedTime(&exec_time, start, stop);
-  std::cout << exec_time << " sec(s) elapsed." << std::endl;
+  std::cout << exec_time / 1000.0 << " sec(s) elapsed." << std::endl;
+  cudaEventDestroy(start);
+  cudaEventDestroy(stop);
 }
 
 // Is this a leaky relu?

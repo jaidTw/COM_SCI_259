@@ -73,6 +73,20 @@ __global__ void GPU_classifier(const VTYPE synapse[Nn][Ni],
     neuron_n[n] = GPU_transfer(sum);
   }
 }
+
+
+__global__ void GPU_classifier_tiled(const VTYPE synapse[Nn][Ni],
+                               const VTYPE *neuron_i,
+                               VTYPE *neuron_n) {
+  const int n = blockIdx.x * blockDim.x + threadIdx.x;
+  if (n < Nn) {
+    VTYPE sum = 0;
+    for (int i = 0; i < Ni; i++) {
+        sum += synapse[n][i] * neuron_i[i];
+    }
+    neuron_n[n] = GPU_transfer(sum);
+  }
+}
 /*
 __global__ void GPU_classifier_layer_blocked_compute(const VTYPE synapse[Tn][Ti],
                                                      const VTYPE *neuron_i,
@@ -151,7 +165,7 @@ int main(void) {
     int num_blocks = Nn / num_threads;
 
     cudaMemset(d_neuron_n, 0, Nn * sizeof(VTYPE));
-    timeit([&]() {
+    CUDA_timeit([&]() {
       GPU_classifier<<<num_blocks, num_threads>>>(d_synapse, d_neuron_i, d_neuron_n);
     });
     cudaMemcpy(neuron_n3, d_neuron_n, Nn * sizeof(VTYPE), cudaMemcpyDeviceToHost);
@@ -161,5 +175,5 @@ int main(void) {
   }
   std::cout << "Blocked version:\t";
 
-  GPU_classifier_layer_blocked(d_synapse, d_neuron_i, d_neuron_n);
+//  GPU_classifier_layer_tiled(d_synapse, d_neuron_i, d_neuron_n);
 }

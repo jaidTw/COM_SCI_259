@@ -25,7 +25,7 @@ __attribute__ ((noinline)) void timeit(std::function<void ()> f) {
 }
 
 template <typename F>
-__attribute__ ((noinline)) void timeit(F f) {
+__attribute__ ((noinline)) void CUDA_timeit(F f) {
   cudaEvent_t start, stop;
   cudaEventCreate(&start);
   cudaEventCreate(&stop);

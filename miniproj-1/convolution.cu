@@ -33,6 +33,7 @@ VTYPE (*synapse)[Ky][Kx][Nn][Ni];
 VTYPE (*neuron_i)[NYPAD][NXPAD][Ni];
 VTYPE (*neuron_n)[NYSCL][NXSCL][Nn];
 VTYPE (*neuron_n2)[NYSCL][NXSCL][Nn];
+VTYPE (*neuron_n3)[NYSCL][NXSCL][Nn];
 
 void convolution_layer_blocked(VTYPE synapse[Ky][Kx][Nn][Ni], 
                                VTYPE neuron_i[NYPAD][NXPAD][Ni], 
@@ -158,6 +159,7 @@ int main(void) {
   neuron_i = (VTYPE (*)[NYPAD][NXPAD][Ni]) aligned_alloc(64, NYPAD * NXPAD * Ni * sizeof(VTYPE));
   neuron_n = (VTYPE (*)[NYSCL][NXSCL][Nn]) aligned_alloc(64, NYSCL * NXSCL * Nn * sizeof(VTYPE));
   neuron_n2 = (VTYPE (*)[NYSCL][NXSCL][Nn]) aligned_alloc(64, NYSCL * NXSCL * Nn * sizeof(VTYPE));
+  neuron_n3 = (VTYPE (*)[NYSCL][NXSCL][Nn]) aligned_alloc(64, NYSCL * NXSCL * Nn * sizeof(VTYPE));
 
   fill_random((VTYPE *) synapse, SYNAPSE_SIZE);
   fill_random((VTYPE *) neuron_i, NXPAD * NYPAD * Ni);
@@ -173,6 +175,37 @@ int main(void) {
   compare((VTYPE *) neuron_n, (VTYPE *) neuron_n2, NYSCL * NXSCL * Nn);
 
   std::cout << "------ Running GPU version ------" << std::endl;
+
+
+  VTYPE (*d_synapse) [Kx][Nn][Ni];
+  VTYPE (*d_neuron_i) [NXPAD][Ni];
+  VTYPE (*d_neuron_n) [NXSCL][Nn];
+
+  cudaMalloc((void **) &d_synapse, sizeof(VTYPE) * SYNAPSE_SIZE);
+  cudaMalloc((void **) &d_neuron_i, sizeof(VTYPE) * NYPAD * NXPAD * Ni);
+  cudaMalloc((void **) &d_neuron_n, sizeof(VTYPE) * NYSCL * NXSCL * Nn);
+
+  cudaMemcpy(d_synapse, synapse, SYNAPSE_SIZE * sizeof(VTYPE), cudaMemcpyHostToDevice); 
+  cudaMemcpy(d_neuron_i, neuron_i, NYPAD * NXPAD * Ni * sizeof(VTYPE), cudaMemcpyHostToDevice); 
+  cudaMemcpy(d_neuron_n, neuron_n, NYSCL * NXSCL * Nn * sizeof(VTYPE), cudaMemcpyHostToDevice); 
+
+
+  std::cout << "Simple version: \t";
+
+  for (int num_threads = 2; num_threads <= 1024; num_threads *= 2) {
+    int num_blocks = Nn / num_threads;
+  
+    cudaMemset(d_neuron_n, 0, NYSCL * NXSCL * Nn * sizeof(VTYPE));
+    CUDA_timeit([&]() {
+      GPU_convolution_layer<<<num_blocks, num_threads>>>(d_synapse, d_neuron_i, d_neuron_n);
+    });
+
+    cudaMemcpy(neuron_n3, d_neuron_n, NYSCL * NXSCL * Nn * sizeof(VTYPE), cudaMemcpyDeviceToHost);
+    std::cout << "#threads = " << num_threads << ", #blocks = " << num_blocks << std::endl;
+    compare((VTYPE *) neuron_n, (VTYPE *) neuron_n3, NYSCL * NXSCL * Nn);
+  }  
+  std::cout << "Blocked version:\t";  
 }
+
 
 

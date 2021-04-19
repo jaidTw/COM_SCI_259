@@ -62,8 +62,8 @@ void classifier_tiled(const VTYPE synapse[Nn][Ni],
 }
 
 __global__ void GPU_classifier(const VTYPE synapse[Nn][Ni],
-                               const VTYPE *neuron_i,
-                               VTYPE *neuron_n,
+                               const VTYPE neuron_i[Ni],
+                               VTYPE neuron_n[Nn],
                                size_t pitch) {
   const int n = blockIdx.x * blockDim.x + threadIdx.x;
   VTYPE *synapse_row = (VTYPE *)((char *)synapse + n * pitch);
@@ -77,27 +77,45 @@ __global__ void GPU_classifier(const VTYPE synapse[Nn][Ni],
 }
 
 __global__ void GPU_classifier_tiled(const VTYPE synapse[Nn][Ni],
-                                      const VTYPE *neuron_i,
-                                      VTYPE *neuron_n,
-                                      size_t pitch) {
-//  __shared__ float local_synapse[blockDim.y][blockDim.x];
-//  __shared__ float local_neuron_i[blockDim.x];
-
+                                     const VTYPE neuron_i[Ni],
+                                     VTYPE neuron_n[Nn],
+                                     size_t pitch,
+                                     int tiling_size) {
   VTYPE sum = 0;
 
   int row = blockIdx.y * blockDim.y + threadIdx.y;
-  for (int t = 0; t < (Ni / blockDim.x); ++t) {
-//    int col = t * blockDim.x + threadIdx.x;
-
-//    local_synapse[threadIdx.y][threadIdx.x] = synapse[row][col];
-//    local_neuron_i[threadIdx.x][threadIdx.y] = neuron_i;
-
-//    __syncthreads();
-    VTYPE *synapse_row = (VTYPE *)((char *)synapse + row * pitch);
-    for (int i = 0; i < blockDim.x; ++i) {
+  VTYPE *synapse_row = (VTYPE *)((char *)synapse + row * pitch);
+  for (int t = 0; t < Ni; t += tiling_size) {
+    for (int i = t; i < t + tiling_size; ++i) {
       sum += synapse_row[i] * neuron_i[i];
     }
-//   __syncthreads();
+  }
+   neuron_n[row] = GPU_transfer(sum);
+}
+
+__global__ void GPU_classifier_tiled_smem(const VTYPE synapse[Nn][Ni],
+                                          const VTYPE neuron_i[Ni],
+                                          VTYPE neuron_n[Nn],
+                                          size_t pitch,
+                                          int tiling_size) {
+  extern __shared__ VTYPE p[];
+  VTYPE *local_synapse = p;
+  VTYPE *local_neuron_i = p + Tn * tiling_size;
+  VTYPE sum = 0;
+
+  int row = blockIdx.y * blockDim.y + threadIdx.y;
+  VTYPE *synapse_row = (VTYPE *)((char *)synapse + row * pitch);
+  for (int t = 0; t < Ni; t += tiling_size) {
+    int col = t * blockDim.x + threadIdx.x;
+
+    local_synapse[threadIdx.y * tiling_size + threadIdx.x] = synapse_row[col];
+    local_neuron_i[threadIdx.x] = neuron_i[col];
+
+    __syncthreads();
+    for (int i = t; i < t + tiling_size; ++i) {
+      sum += local_synapse[threadIdx.y * tiling_size + i] * local_neuron_i[i];
+    }
+   __syncthreads();
   }
    neuron_n[row] = GPU_transfer(sum);
 }
@@ -116,7 +134,7 @@ int main(void) {
   auto f1 = std::bind(classifier, synapse, neuron_i, neuron_n);
   timeit(f1);
 
-  std::cout << "Blocked version:\t";  
+  std::cout << "Tiled version:\t";  
   auto f2 = std::bind(classifier_tiled, synapse, neuron_i, neuron_n2);
   timeit(f2);
 
@@ -136,19 +154,6 @@ int main(void) {
 
   std::cout << "Simple version: \t";
 
-/*
-  for (int num_threads = 2; num_threads <= 1024; num_threads *= 2) {
-    int num_blocks = Nn / num_threads;
-
-    cudaMemset(d_neuron_n, 0, Nn * sizeof(VTYPE));
-    CUDA_timeit([&]() {
-      GPU_classifier<<<num_blocks, num_threads>>>(d_synapse, d_neuron_i, d_neuron_n);
-    });
-    cudaMemcpy(neuron_n3, d_neuron_n, Nn * sizeof(VTYPE), cudaMemcpyDeviceToHost);
-
-    std::cout << "#threads = " << num_threads << ", #blocks = " << num_blocks << std::endl;
-    compare(neuron_n, neuron_n3, Nn);
-  }*/
 
   int num_threads = 8;
   int num_blocks = Nn / num_threads;
@@ -160,19 +165,22 @@ int main(void) {
   cudaMemcpy(neuron_n3, d_neuron_n, Nn * sizeof(VTYPE), cudaMemcpyDeviceToHost);
 
   compare(neuron_n, neuron_n3, Nn);
-  std::cout << "Blocked version:\t";
+  std::cout << "Tiled version:\t";
 
+  for(int ti = 2; ti <= 512; ti *= 2) {
   cudaMemset(d_neuron_n, 0, Nn * sizeof(VTYPE));
-  dim3 blockDim(1, Tn);
-  dim3 gridDim(Ni/Ti, Nn/Tn);
+  dim3 blockDim(1, Tn), gridDim(1, Nn/Tn);
   CUDA_timeit([&]() {
-    GPU_classifier_tiled<<<gridDim, blockDim>>>(d_synapse, d_neuron_i, d_neuron_n, pitch);
+    GPU_classifier_tiled<<<gridDim, blockDim>>>(d_synapse, d_neuron_i, d_neuron_n, pitch, ti);
   });
   auto err = cudaGetLastError();
   if(err) {
     std::cerr << "Error: " << cudaGetErrorString(err) << std::endl;
     return 0;
   }
+  cudaMemcpy(neuron_n2, d_neuron_n, Nn * sizeof(VTYPE), cudaMemcpyDeviceToHost);
+  std::cout << "tiled size = " << ti << std::endl;
 
   compare(neuron_n, neuron_n2, Nn);
+  }
 }

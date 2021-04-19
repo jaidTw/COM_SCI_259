@@ -8,6 +8,14 @@
 
 #define VTYPE float
 
+inline void cuda_check_error() {
+  auto err = cudaGetLastError();
+  if(err) {
+    std::cerr << "Error: " << cudaGetErrorString(err) << std::endl;
+    exit(0);
+  }
+}
+
 void fill_random(VTYPE *array, size_t size) {
   std::random_device rd;
   std::mt19937_64 gen(rd());

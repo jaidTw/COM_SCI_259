@@ -155,6 +155,7 @@ __global__ void GPU_convolution_pitch(cudaPitchedPtr p_synapse,
   for (int ky = 0; ky < Ky; ky++) {
     for (int kx = 0; kx < Kx; kx++) {
       for (int i = 0; i < Ni; i++) {
+        // Access M[x][y][z] in M[X][Y][Z]: T elem = *(T *)((char *)ptr + pitch * (Y * x + y) + z * sizeof(T))
         VTYPE sv = *(VTYPE *)(synapse + p_synapse.pitch * (p_synapse.ysize * ky + kx) + (t * Nn + i) * sizeof(VTYPE));
         VTYPE nv = *(VTYPE *)(neuron_i + p_neuron_i.pitch * (p_neuron_i.ysize * (ky+y) + (kx+x)) + i * sizeof(VTYPE));
         sum += sv * nv;
@@ -164,7 +165,6 @@ __global__ void GPU_convolution_pitch(cudaPitchedPtr p_synapse,
 //  neuron_n[y][x][t] = GPU_transfer(sum);
   *(VTYPE *)(neuron_n + p_neuron_n.pitch * (p_neuron_n.ysize * y + x) + t * sizeof(VTYPE)) = GPU_transfer(sum);
 }
-
 
 void MallocAndCpy3D(cudaPitchedPtr &devPtr, void *src, cudaExtent &extent) {
   cudaMalloc3D(&devPtr, extent);
@@ -229,6 +229,7 @@ int main(void) {
   for (int tn = 1; tn <= Nn; tn *= 2) {
   dim3 grid_size(NXSCL/Tx, NYSCL/Ty, Nn/tn);
   dim3 block_size(Tx, Ty, tn);
+  printf("Grid size: (%d, %d, %d), Block size: (%d, %d, %d)\n", grid_size.x, grid_size.y, grid_size.z, block_size.x, block_size.y, block_size.z);
   std::cout << "Simple version:\t";
   memset(neuron_n3, 0, NYSCL * NXSCL * Nn * sizeof(VTYPE));
   CUDA_timeit([&]() {
@@ -257,7 +258,6 @@ int main(void) {
   copyback.extent = extent_neuron_n;
   cudaMemcpy3D(&copyback);
   compare((VTYPE *) neuron_n, (VTYPE *) neuron_n2, NYSCL * NXSCL * Nn);
-  std::cout << "#Tn = " << tn << std::endl;
   }
 
 }

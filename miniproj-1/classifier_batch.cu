@@ -18,11 +18,13 @@
   #define Ti 16
 #endif
 
-VTYPE synapse[Nn][Ni] __attribute__((aligned(64)));
-VTYPE neuron_i[Ni] __attribute__((aligned(64)));
-VTYPE neuron_n[Nn] __attribute__((aligned(64)));
-VTYPE neuron_n2[Nn] __attribute__((aligned(64)));
-VTYPE neuron_n3[Nn] __attribute__((aligned(64)));
+#define BATCH 16
+
+VTYPE (*synapse)[BATCH][Nn][Ni];
+VTYPE (*neuron_i)[BATCH][Ni];
+VTYPE (*neuron_n)[BATCH][Nn];
+VTYPE (*neuron_n2)[BATCH][Nn];
+VTYPE (*neuron_n3)[BATCH][Nn];
 
 void classifier(const VTYPE synapse[Nn][Ni],
                 const VTYPE neuron_i[Ni],
@@ -123,22 +125,35 @@ __global__ void GPU_classifier_tiled_smem(const VTYPE synapse[Nn][Ni],
 int main(void) {
   std::cout << "------ Initializing ------" << std::endl;
 
-  fill_random((VTYPE *) synapse, Nn * Ni);
-  fill_random((VTYPE *) neuron_i, Ni);
-  memset(neuron_n, 0, Nn * sizeof(VTYPE));
-  memset(neuron_n2, 0, Nn * sizeof(VTYPE));
-  memset(neuron_n3, 0, Nn * sizeof(VTYPE));
+  synapse   = (VTYPE (*)[BATCH][Nn][Ni]) aligned_alloc(64, BATCH * Nn * Ni * sizeof(VTYPE));
+  neuron_i  = (VTYPE (*)[BATCH][Ni]) aligned_alloc(64, BATCH * Ni * sizeof(VTYPE));
+  neuron_n  = (VTYPE (*)[BATCH][Nn]) aligned_alloc(64, BATCH * Nn * sizeof(VTYPE));
+  neuron_n2 = (VTYPE (*)[BATCH][Nn]) aligned_alloc(64, BATCH * Nn * sizeof(VTYPE));
+  neuron_n3 = (VTYPE (*)[BATCH][Nn]) aligned_alloc(64, BATCH * Nn * sizeof(VTYPE));
+
+  fill_random((VTYPE *) synapse, Nn * Ni * BATCH);
+  fill_random((VTYPE *) neuron_i, Ni * BATCH);
+  memset(neuron_n, 0, Nn * BATCH* sizeof(VTYPE));
+  memset(neuron_n2, 0, Nn * BATCH * sizeof(VTYPE));
+  memset(neuron_n3, 0, Nn * BATCH * sizeof(VTYPE));
 
   std::cout << "------ Running CPU version ------" << std::endl;
   std::cout << "Simple version: \t";
-  auto f1 = std::bind(classifier, synapse, neuron_i, neuron_n);
-  timeit(f1);
 
-  std::cout << "Tiled version:  \t";
-  auto f2 = std::bind(classifier_tiled, synapse, neuron_i, neuron_n2);
-  timeit(f2);
+  timeit([]() {
+    for(int b = 0; b < BATCH; ++b) {
+      classifier((*synapse)[b], (*neuron_i)[b], (*neuron_n)[b]);
+    }
+  });
 
-  compare(neuron_n, neuron_n2, Nn);
+  std::cout << "Tiled version:  \t";  
+  timeit([]() {
+    for(int b = 0; b < BATCH; ++b) {
+      classifier_tiled((*synapse)[b], (*neuron_i)[b], (*neuron_n2)[b]);
+    }
+  });
+
+  compare((VTYPE *)neuron_n, (VTYPE *)neuron_n2, Nn * BATCH);
 
   std::cout << "------ Running GPU version ------" << std::endl;
   VTYPE (*d_synapse)[Ni];
@@ -162,11 +177,12 @@ int main(void) {
   CUDA_timeit([&]() {
     GPU_classifier<<<num_blocks, num_threads>>>(d_synapse, d_neuron_i, d_neuron_n, pitch);
   });
-  cudaMemcpy(neuron_n2, d_neuron_n, Nn * sizeof(VTYPE), cudaMemcpyDeviceToHost);
+  cudaMemcpy(neuron_n3, d_neuron_n, Nn * sizeof(VTYPE), cudaMemcpyDeviceToHost);
 
-  std::cout << "Tiled version:  \t";
+  compare(neuron_n, neuron_n3, Nn);
+  std::cout << "Tiled version:\t";
 
-  for(int ti = 2; ti <= 512; ti *= 2) {
+/*  for(int ti = 2; ti <= 512; ti *= 2) {
   cudaMemset(d_neuron_n, 0, Nn * sizeof(VTYPE));
   dim3 blockDim(1, Tn), gridDim(1, Nn/Tn);
   CUDA_timeit([&]() {
@@ -177,9 +193,9 @@ int main(void) {
     std::cerr << "Error: " << cudaGetErrorString(err) << std::endl;
     return 0;
   }
-  cudaMemcpy(neuron_n3, d_neuron_n, Nn * sizeof(VTYPE), cudaMemcpyDeviceToHost);
+  cudaMemcpy(neuron_n2, d_neuron_n, Nn * sizeof(VTYPE), cudaMemcpyDeviceToHost);
   std::cout << "tiled size = " << ti << std::endl;
 
-  compare(neuron_n2, neuron_n3, Nn);
-  }
+  compare(neuron_n, neuron_n2, Nn);
+  }*/
 }

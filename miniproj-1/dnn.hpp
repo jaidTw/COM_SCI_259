@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <chrono>
 #include <functional>
+#include <iomanip>
 
 #define VTYPE float
 
@@ -29,7 +30,7 @@ __attribute__ ((noinline)) void timeit(std::function<void ()> f) {
   auto start = std::chrono::high_resolution_clock::now();
   f();
   std::chrono::duration<double> diff = std::chrono::high_resolution_clock::now() - start;
-  std::cout << diff.count() << " sec(s) elapsed." << std::endl;
+  std::cout << std::left << std::setw(10) << diff.count() << " sec(s) elapsed." << std::endl;
 }
 
 template <typename F>
@@ -44,7 +45,7 @@ __attribute__ ((noinline)) void CUDA_timeit(F f) {
 
   float exec_time;
   cudaEventElapsedTime(&exec_time, start, stop);
-  std::cout << exec_time / 1000.0 << " sec(s) elapsed." << std::endl;
+  std::cout << std::left << std::setw(10) << exec_time / 1000.0 << " sec(s) elapsed." << std::endl;
   cudaEventDestroy(start);
   cudaEventDestroy(stop);
 }
@@ -74,7 +75,7 @@ void compare(VTYPE* neuron1, VTYPE* neuron2, size_t size) {
         std::cout << " \t\tERROR";
       std::cout << "\n";
     }
-  } else {
+  }/* else {
     std::cout << "results match" << std::endl;
-  }
+  }*/
 }

@@ -212,11 +212,7 @@ int main(void) {
   });
   cudaMemcpy2D(neuron_n3, Nn * sizeof(VTYPE), d_neuron_n, pitch_neuron_n, Nn * sizeof(VTYPE), BATCH, cudaMemcpyDeviceToHost);
 
-  auto err = cudaGetLastError();
-  if(err) {
-    std::cerr << "Error: " << cudaGetErrorString(err) << std::endl;
-    return 0;
-  }
+  cuda_check_error();
   compare((VTYPE *)neuron_n, (VTYPE *)neuron_n3, Nn * BATCH);
 /*
   std::cout << "Tiled version:\t";

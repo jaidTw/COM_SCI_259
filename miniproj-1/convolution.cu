@@ -127,7 +127,7 @@ __global__ void GPU_convolution(cudaPitchedPtr p_synapse,
   int x = blockIdx.x * blockDim.x + threadIdx.x;
   int y = blockIdx.y * blockDim.y + threadIdx.y;
   int z = blockIdx.z * blockDim.z + threadIdx.z;
-  // t = index of Nn dimensino, b = batch id
+  // t = index of Nn dimension, b = batch id
   int t = z - (z / Nn) * Nn;
   int b = batch_begin + z / Nn;
 
@@ -143,6 +143,41 @@ __global__ void GPU_convolution(cudaPitchedPtr p_synapse,
         // nv = neuron_i[b][ky+y][kx+x][i]
         VTYPE nv = *(VTYPE *)(neuron_i + p_neuron_i.pitch * (p_neuron_i.ysize * (b * NYPAD + (ky+y)) + (kx+x)) + i * sizeof(VTYPE));
         sum += sv * nv;
+      }
+    }
+  }
+  // neuron_n[y][x][t] = GPU_transfer(sum)
+  *(VTYPE *)(neuron_n + p_neuron_n.pitch * (p_neuron_n.ysize * (b * NYSCL + y) + x) + t * sizeof(VTYPE)) = GPU_transfer(sum);
+}
+
+__global__ void GPU_convolution_tiled(cudaPitchedPtr p_synapse, 
+                                      cudaPitchedPtr p_neuron_i, 
+                                      cudaPitchedPtr p_neuron_n,
+                                      int batch_begin, int tiling_size) {
+  char *synapse = (char *)p_synapse.ptr;
+  char *neuron_i = (char *)p_neuron_i.ptr;
+  char *neuron_n = (char *)p_neuron_n.ptr;
+
+  int x = blockIdx.x * blockDim.x + threadIdx.x;
+  int y = blockIdx.y * blockDim.y + threadIdx.y;
+  int z = blockIdx.z * blockDim.z + threadIdx.z;
+  // t = index of Nn dimension, b = batch id
+  int t = z - (z / Nn) * Nn;
+  int b = batch_begin + z / Nn;
+
+  VTYPE sum = 0;
+
+  for (int i = 0; i < Ni; i += tiling_size) {
+    for (int ky = 0; ky < Ky; ky++) {
+      for (int kx = 0; kx < Kx; kx++) {
+        for(int ii = i; ii < i + tiling_size; ii++) {
+          // Access M[x][y][z] in M[X][Y][Z]: T elem = *(T *)((char *)ptr + pitch * (Y * x + y) + z * sizeof(T))
+          // sv = synapse[b][ky][kx][t][i]
+          VTYPE sv = *(VTYPE *)(synapse + p_synapse.pitch * (p_synapse.ysize * (b * Ky + ky) + kx) + (t * Nn + ii) * sizeof(VTYPE));
+          // nv = neuron_i[b][ky+y][kx+x][i]
+          VTYPE nv = *(VTYPE *)(neuron_i + p_neuron_i.pitch * (p_neuron_i.ysize * (b * NYPAD + (ky+y)) + (kx+x)) + ii * sizeof(VTYPE));
+          sum += sv * nv;
+        }
       }
     }
   }
@@ -171,7 +206,6 @@ int main(int argc, char **argv) {
   neuron_i  = (VTYPE (*)[NYPAD][NXPAD][Ni]) aligned_alloc(64, batch * NYPAD * NXPAD * Ni * sizeof(VTYPE));
   neuron_n  = (VTYPE (*)[NYSCL][NXSCL][Nn]) aligned_alloc(64, batch * NYSCL * NXSCL * Nn * sizeof(VTYPE));
   neuron_n2 = (VTYPE (*)[NYSCL][NXSCL][Nn]) aligned_alloc(64, batch * NYSCL * NXSCL * Nn * sizeof(VTYPE));
-  neuron_n3 = (VTYPE (*)[NYSCL][NXSCL][Nn]) aligned_alloc(64, batch * NYSCL * NXSCL * Nn * sizeof(VTYPE));
 
   fill_random((VTYPE *)synapse, batch * SYNAPSE_SIZE);
   fill_random((VTYPE *)neuron_i, batch * NXPAD * NYPAD * Ni);
@@ -204,29 +238,40 @@ int main(int argc, char **argv) {
   // End of Initialization
 
   std::cout << "GPU version:\n";
-  for(int tn = 1; tn < 128; tn *= 2) {
-    dim3 grid_size(NXSCL/Tx, NYSCL/Ty, (Nn / tn) * batch_in_parallel);
-    dim3 block_size(Tx, Ty, tn);
-    if(Tx * Ty * tn > 1024 || tn > 64) continue;
-    printf("Grid: (%2d, %2d, %4d), Block: (%2d, %2d, %2d), Tn=%2d\t", grid_size.x, grid_size.y, grid_size.z, block_size.x, block_size.y, block_size.z, tn);
-    memset(neuron_n2, 0, batch * NYSCL * NXSCL * Nn * sizeof(VTYPE));
-    cudaMemset3D(d_neuron_n, 0, extent_neuron_n);
-    CUDA_timeit([&]() {
-      for(int b = 0; b < batch; b += batch_in_parallel) {
-        GPU_convolution<<<grid_size, block_size>>>(d_synapse, d_neuron_i, d_neuron_n, b);
-      }
-    });
-    cuda_check_error();
-    cudaMemcpy3DParms copyback;
-    memset(&copyback, 0, sizeof(copyback));
-    copyback.dstPtr.pitch = Ni * sizeof(VTYPE);
-    copyback.dstPtr.ptr = neuron_n2;
-    copyback.dstPtr.xsize = Ni;
-    copyback.dstPtr.ysize = NXSCL;
-    copyback.srcPtr = d_neuron_n;
-    copyback.kind = cudaMemcpyDeviceToHost;
-    copyback.extent = extent_neuron_n;
-    cudaMemcpy3D(&copyback);
-    compare((VTYPE *)neuron_n, (VTYPE *)neuron_n2, batch * NYSCL * NXSCL * Nn);
+  int bx = 2, by = 2, mn = 64; // Best performance based on experiments
+  dim3 grid_size(NXSCL/bx, NYSCL/by, (Nn / mn) * batch_in_parallel);
+  dim3 block_size(bx, by, mn);
+  printf("Grid: (%2d, %2d, %4d), Block: (%2d, %2d, %2d), Mn=%2d\t", grid_size.x, grid_size.y, grid_size.z, block_size.x, block_size.y, block_size.z, mn);
+  memset(neuron_n2, 0, batch * NYSCL * NXSCL * Nn * sizeof(VTYPE));
+  cudaMemset3D(d_neuron_n, 0, extent_neuron_n);
+  CUDA_timeit([&]() {
+    for(int b = 0; b < batch; b += batch_in_parallel) {
+      GPU_convolution<<<grid_size, block_size>>>(d_synapse, d_neuron_i, d_neuron_n, b);
     }
+  });
+  cuda_check_error();
+  cudaMemcpy3DParms copyback;
+  memset(&copyback, 0, sizeof(copyback));
+  copyback.dstPtr.pitch = Ni * sizeof(VTYPE);
+  copyback.dstPtr.ptr = neuron_n2;
+  copyback.dstPtr.xsize = Ni;
+  copyback.dstPtr.ysize = NXSCL;
+  copyback.srcPtr = d_neuron_n;
+  copyback.kind = cudaMemcpyDeviceToHost;
+  copyback.extent = extent_neuron_n;
+  cudaMemcpy3D(&copyback);
+  compare((VTYPE *)neuron_n, (VTYPE *)neuron_n2, batch * NYSCL * NXSCL * Nn);
+
+  std::cout << "Tiling version:\n";
+  printf("Grid: (%2d, %2d, %4d), Block: (%2d, %2d, %2d), ti=%2d\t", grid_size.x, grid_size.y, grid_size.z, block_size.x, block_size.y, block_size.z, 64);
+  memset(neuron_n2, 0, batch * NYSCL * NXSCL * Nn * sizeof(VTYPE));
+  cudaMemset3D(d_neuron_n, 0, extent_neuron_n);
+  CUDA_timeit([&]() {
+    for(int b = 0; b < batch; b += batch_in_parallel) {
+      GPU_convolution_tiled<<<grid_size, block_size>>>(d_synapse, d_neuron_i, d_neuron_n, b, 64);
+    }
+  });
+  cuda_check_error();
+  cudaMemcpy3D(&copyback);
+  compare((VTYPE *)neuron_n, (VTYPE *)neuron_n2, batch * NYSCL * NXSCL * Nn);
 }

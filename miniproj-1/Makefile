@@ -2,7 +2,7 @@ CPP=nvcc
 
 FLAGS := --std=c++11 -O3 -arch=sm_70
 CFLAGS := $(OPT) -Wextra,-Wall
-MODULE := conv1 conv2 class1 class2 class1_batch class2_batch
+MODULE := conv1 conv2 class1 class2
 
 .PHONY: all clean
 
@@ -18,12 +18,6 @@ class1: classifier.cu
 	$(CPP) $^ $(FLAGS) -Xcompiler $(CFLAGS) -o $@ -DNi=25088 -DNn=4096 -DTii=512 -DTi=64 -DTnn=32 -DTn=16
 
 class2: classifier.cu
-	$(CPP) $^ $(FLAGS) -Xcompiler $(CFLAGS) -o $@ -DNi=4096 -DNn=1024 -DTii=32 -DTi=32 -DTnn=32 -DTn=16
-
-class1_batch: classifier_batch.cu
-	$(CPP) $^ $(FLAGS) -Xcompiler $(CFLAGS) -o $@ -DNi=25088 -DNn=4096 -DTii=512 -DTi=64 -DTnn=32 -DTn=16
-
-class2_batch: classifier_batch.cu
 	$(CPP) $^ $(FLAGS) -Xcompiler $(CFLAGS) -o $@ -DNi=4096 -DNn=1024 -DTii=32 -DTi=32 -DTnn=32 -DTn=16
 
 clean:

@@ -30,7 +30,7 @@ __attribute__ ((noinline)) void timeit(std::function<void ()> f) {
   auto start = std::chrono::high_resolution_clock::now();
   f();
   std::chrono::duration<double> diff = std::chrono::high_resolution_clock::now() - start;
-  std::cout << std::left << std::setw(10) << diff.count() << " sec(s) elapsed." << std::endl;
+  std::cout << std::left << std::setw(12) << diff.count() << " sec(s) elapsed." << std::endl;
 }
 
 template <typename F>
@@ -45,9 +45,24 @@ __attribute__ ((noinline)) void CUDA_timeit(F f) {
 
   float exec_time;
   cudaEventElapsedTime(&exec_time, start, stop);
-  std::cout << std::left << std::setw(10) << exec_time / 1000.0 << " sec(s) elapsed." << std::endl;
+  std::cout << std::left << std::setw(12) << exec_time / 1000.0 << " sec(s) elapsed." << std::endl;
   cudaEventDestroy(start);
   cudaEventDestroy(stop);
+}
+
+void MallocAndCpy3D(cudaPitchedPtr &devPtr, void *src, cudaExtent &extent) {
+  cudaMalloc3D(&devPtr, extent);
+
+  cudaMemcpy3DParms params;
+  memset(&params, 0, sizeof(params));
+  params.srcPtr.pitch = extent.width;
+  params.srcPtr.ptr = src;
+  params.srcPtr.xsize = extent.width / sizeof(VTYPE);
+  params.srcPtr.ysize = extent.height;
+  params.dstPtr = devPtr;
+  params.kind = cudaMemcpyHostToDevice;
+  params.extent = extent;
+  cudaMemcpy3D(&params);
 }
 
 // Is this a leaky relu?

@@ -11,8 +11,36 @@ MEM_CLOCK = 1.7
 CACHE_MAX = 256
 # L2 Cache
 
-FILENAME = 'gemm.csv'
+# Warp of 32 threads
+WARP = 32
 
+FILENAME = 'conv.csv'
+# block m, block n, block k
+CTA_TILE_SELECTION = [(128, 128, 8), (128, 64, 4), (128, 32, 4)]
+
+def l1_cache_traffic (m, n, k, wi, padding, stride, wf):
+    # general memory access inefficiency
+    ratio = (wi + 2 * padding) * stride
+    ratio = ratio / (wi + 2* padding - wf + 1)
+    MLI_IFmap = ratio
+    MLI_Filter = 2 # TODO not quite sure here
+    T_l1 = m * k * MLI_IFmap + n * k * MLI_Filter
+
+def l2_cache_traffic (k, bm, bn, bk, wi, padding, stride, wf, hi, hf):
+    # Intra-CTA spatial Locality
+    ratio = (wi + 2 * padding) * stride
+    ratio = ratio / (wi + 2 * padding - wf + 1)
+    # Distance between the smallest and the largest address
+    Dist_v = bm * ratio # vertical distance
+    Dist_h = ((bk - 1) / wf) * ((wi - wf + 1) + stride * (wf - bk + 1))
+    Dist_h = Dist_h + ((wf - bk + 1) / wf) * (stride * (bk - 1)) # horizontal distance
+    A_Dist_v = Dist_v * (bk / (hf * wf))
+    h_mul_w = (hi + 2 * padding - hf + 1) / stride
+    A_Dist_h = Dist_h * (1 + (bm / (h_mul_w) ** 2))
+    T_l2 = (A_Dist_v + A_Dist_h) * (k / bk) * (cta_num / conv_layer)
+    # TODO really not sure the value of A_Dist_IFmap & Dist_Filter & cta_num & conv_layer
+
+# def dram_traffic ()_
 
 def mm_comp_time (m, n, k):
     total_ops = m * n * k

@@ -1,0 +1,7 @@
+# .gitignore
+conv.xlsx
+gemm.xlsx
+conv.csv
+gemm.csv
+version1.txt
+version2.txt

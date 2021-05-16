@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import numpy as np
 import csv
 import math
@@ -9,7 +11,7 @@ MEM_BW = 650
 # Memory Cloak for Titan V (1.7Gbps)
 MEM_CLOCK = 1.7
 # Cache maxsize for CUDA  (256 MB for Integer/ 4GB for max)
-CACHE_MAX = 256 * 1024 * 1024
+CACHE_MAX = 256 * 1024 * 1024 # TODO: Wrong
 # L2 Cache Bandwidth (67.5 GB/s/SM)
 L1_BW = 67.5 * 1024 * 1024 * 1024
 # L1 Cache Bandwidth (1600 GB/s)
@@ -24,7 +26,6 @@ WARP_NUM = 64
 
 FILENAME = 'conv.csv'
 # block m, block n, block k
-CTA_TILE_SELECTION = [(128, 128, 8), (128, 64, 4), (128, 32, 4)]
 
 W_i, H_i, C_i, B = -1, -1, -1, -1
 W_f, H_f, C_o, PAD, STRI = -1, -1, -1, -1, -1
@@ -32,57 +33,83 @@ W_o, H_o, M, N, K = -1, -1, -1, -1, -1
 
 BLOCK_m, BLOCK_n, BLOCK_k = -1, -1, -1
 
-def l1_cache_traffic ():
-    # general memory access inefficiency
-    ratio = (W_i + 2 * PAD) * STRI
-    ratio = ratio / (W_i + 2 * PAD - W_f + 1)
-    MLI_IFmap = ratio
-    MLI_Filter = 2.0 # TODO not quite sure here
-    T_l1 = M * K * MLI_IFmap + N * K * MLI_Filter
-    return T_l1
+def get_cta_tile_size(c_o):
+    if c_o >= 310:
+        return 128, 128, 8
+    elif c_o >= 240:
+        return 128, 64, 4
+    elif c_o >= 180:
+        return 128, 128, 8
+    elif c_o >= 110:
+        return 128, 64, 4
+    elif c_o >= 80:
+        return 128, 128, 8
+    elif c_o >= 50:
+        return 128, 32, 4
+    elif c_o >= 15:
+        return 128, 64, 4
+    else:
+        return 128, 32, 4
 
-def l2_cache_traffic ():
+def get_l1_cache_traffic ():
+    # general memory access inefficiency
+    MLI_IFmap = (W_i + 2 * PAD) * STRI / (W_i + 2 * PAD - W_f + 1)
+    col_elems = WARP_SIZE / BLOCK_k
+    MLI_Filter = ((col_elems - 1) * 2 + (8 - (col_elems - 1))) / col_elems
+    print(f"MLI_IFmap: {MLI_IFmap}, MLI_Filter: {MLI_Filter}")
+    return M * K * MLI_IFmap + N * K * MLI_Filter
+
+def get_l2_cache_traffic ():
     # Intra-CTA spatial Locality
     ratio = (W_i + 2 * PAD) * STRI
     ratio = ratio / (W_i + 2 * PAD - W_f + 1)
     # Distance between the smallest and the largest address
     Dist_v = BLOCK_m * ratio # vertical distance
     Dist_h = ((BLOCK_k - 1) / W_f) * ((W_i - W_f + 1) + STRI * (W_f - BLOCK_k + 1))
-    Dist_h = Dist_h + ((W_f - BLOCK_k + 1) / W_f) * (STRI * (BLOCK_k - 1)) # horizontal distance
+    Dist_h += ((W_f - BLOCK_k + 1) / W_f) * (STRI * (BLOCK_k - 1)) # horizontal distance
+    print(f"DistV: {Dist_v}, DistH: {Dist_h}")
     A_Dist_v = Dist_v * (BLOCK_k / (H_f * W_f))
+    print(BLOCK_k, H_f, W_f)
     h_mul_w = (H_i + 2 * PAD - H_f + 1) / STRI
     A_Dist_h = Dist_h * (1 + (BLOCK_m / (h_mul_w) ** 2))
-    CTA_num = (M / BLOCK_m) * (N / BLOCK_n) * (K / BLOCK_k)
-    T_l2 = (A_Dist_v + A_Dist_h) * (K / BLOCK_k) * CTA_num
-    # TODO really not sure the value of A_Dist_IFmap & Dist_Filter & cta_num & conv_layer
-    return T_l2
+    print(f"A_DistV: {A_Dist_v}, A_DistH: {A_Dist_h}")
+    CTA_num = (M / BLOCK_m) * (N / BLOCK_n) # ceiling?
+    print(CTA_num)
+    conv_layer = 1 # TODO: not sure
+    return (abs(A_Dist_v) + abs(A_Dist_h) + BLOCK_k) * (K / BLOCK_k) * (CTA_num / conv_layer)
 
-def dram_traffic (CTA_col , CTA_tiles_array):
-    # T_DRAM_IFmap = B * H_i * W_i * C_i * (C_o / (W_i * H))  #TODO not sure
-    T_DRAM_IFmap = (M * BLOCK_k) / (K * BLOCK_m) #TODO not sure
+def get_dram_traffic ():
+    T_DRAM_IFmap = B * H_i * W_i * C_i * ((C_o / BLOCK_n)/((C_o / BLOCK_n) * (H_o * W_o * B / BLOCK_m)))
     T_DRAM_Filter = (C_i * H_f * W_f) * C_o
-    T_DRAM_total = T_DRAM_IFmap + T_DRAM_Filter
-    return T_DRAM_total
+    return T_DRAM_IFmap + T_DRAM_Filter
 
-def global_load_stream (L1_traffic, L2_traffic, DRAM_traffic):
-    #TODO pipeline latency
+def get_global_load_stream (L1_traffic, L2_traffic, DRAM_traffic):
+    # TODO: pipeline latency
     latency_l1, latency_l2, latency_dram = 4, 4, 4 
     l1_gls = (latency_l1 + L1_traffic / L1_BW )
     l2_gls = (latency_l2 + L2_traffic / (L2_BW / SM_NUM))
-    l3_gls = (latency_dram + DRAM_traffic / (MEM_BW / SM_NUM))
-    GLS_traffic = max (l1_gls , l2_gls , l3_gls)
-    return GLS_traffic
+    mem_gls = (latency_dram + DRAM_traffic / (MEM_BW / SM_NUM))
+    return max (l1_gls , l2_gls , mem_gls)
 
-def shared_memory_access_stream ():
-    load_traffic  = (BLOCK_m + BLOCK_n) * BLOCK_k / CACHE_MAX 
-    store_traffic = (BLOCK_m + BLOCK_n) * BLOCK_k * WARP_NUM / CACHE_MAX 
-    SAS_traffic = load_traffic + store_traffic
-    return SAS_traffic
+def get_shared_memory_access_stream ():
+    # TODO: CACHE_MAX -> BW LD/ST
+    load_traffic  = (BLOCK_m + BLOCK_n) * BLOCK_k / 1
+    # TODO: BLKwM * blkWN (wrap tiles)
+    store_traffic = (BLOCK_m + BLOCK_n) * BLOCK_k * WARP_NUM / 1
+    return load_traffic + store_traffic
 
-def compute_stream ():
+def get_compute_stream ():
     total_ops = BLOCK_m * BLOCK_n * BLOCK_k
-    CS_traffic = total_ops / (MAXTOPS * 10e6)
-    return CS_traffic
+    # TODO: MAXTOPS -> BW MAC
+    return total_ops / 1
+
+def get_SM_execution_time():
+    tPrologue = 1
+    tEpilogue = 1
+    tMAC = 1
+    tDRAM_LAT = 1
+    tMEM_BW = 1
+
 
 def calculate_time (m, n, k): 
     compute_time = mm_comp_time(m, n, k)
@@ -92,12 +119,13 @@ def calculate_time (m, n, k):
     return max_value
 
 def set_parameters (w_i, h_i, c_i, b, w_f, h_f, c_o, padding, stride, w_o, h_o, m, n, k):
-    global W_i, H_i, C_i, B, W_f, H_f, C_o, PAD, STRI, W_o, H_o, M, N, K
+    global W_i, H_i, C_i, B, W_f, H_f, C_o, PAD, STRI, W_o, H_o, M, N, K, BLOCK_m, BLOCK_n, BLOCK_k
     W_i, H_i, C_i, B = w_i, h_i, c_i, b
     W_f, H_f, C_o, PAD, STRI = w_f, h_f, c_o, padding, stride
     W_o, H_o, M, N, K = w_o, h_o, m, n, k
+    BLOCK_m, BLOCK_n, BLOCK_k = get_cta_tile_size(c_o)
 
-def read_parameters(file_name):
+def load_parameters(file_name):
     with open(file_name) as csv_file:
         reader = csv.reader(csv_file)
         line_count = 0
@@ -115,8 +143,9 @@ def read_parameters(file_name):
     return parameters
 
 if __name__ == '__main__':
-    parameters = read_parameters(FILENAME)
+#    parameters = load_parameters(FILENAME)
     #print(parameters[1][0])
+    """
     w_i, h_i, c_i, b = 700, 161, 1, 32
     w_f, h_f, c_o, padding, stride = 5, 20, 32, 0, 2
     w_o = math.floor(w_i + 2 * padding - w_f) / stride
@@ -124,28 +153,27 @@ if __name__ == '__main__':
     m = b * h_o * w_o
     n = c_o
     k = c_i * h_f * w_f
-    block_m, block_n, block_k = 128, 128, 64
+    """
+    w_i, h_i, c_i, b = 700, 161, 3, 2
+    w_f, h_f, c_o, padding, stride = 3, 3, 2, 1, 1
+    w_o = math.floor(w_i + 2 * padding - w_f) / stride
+    h_o = math.floor(h_i + 2 * padding - h_f) / stride
+    m = b * h_o * w_o
+    n = c_o
+    k = c_i * h_f * w_f
     
     set_parameters(w_i, h_i, c_i, b, w_f, h_f, c_o, padding, stride, w_o, h_o, m, n, k)
 
-    L1_Traffic = l1_cache_traffic()
-    L2_Traffic = l2_cache_traffic()
-    DRAM_Traffic = dram_traffic(4,2)
+    L1_Traffic = get_l1_cache_traffic()
+    L2_Traffic = get_l2_cache_traffic()
+    DRAM_Traffic = get_dram_traffic()
     
-    GLS = global_load_stream(L1_Traffic, L2_Traffic, DRAM_Traffic)
-    SAS = shared_memory_access_stream()
-    CS = compute_stream()
+    tGLS = get_global_load_stream(L1_Traffic, L2_Traffic, DRAM_Traffic)
+    tSAS = get_shared_memory_access_stream()
+    tCS = get_compute_stream()
 
-    print("%f, %f, %f" % (GLS, SAS, CS))
+    print(f"tGLS: {tGLS}, tSAS: {tSAS}, tCS: {tCS}")
 
-    '''
-    print ('m\tn\tk\tcomputation bound\tmemory bound\tpredicted time')
-    calculate_time(5124,  700, 2048)
-    calculate_time(  35,  700, 2048)
-    calculate_time(5124,  700, 2560)
-    calculate_time(  35,  700, 2560)
-    calculate_time(5124, 1500, 2048)
-    calculate_time(  35, 1500, 2048)
-    calculate_time(5124, 1500, 2560)
-    calculate_time(  35, 1500, 2560)
-    '''# mm_mem_time(1760, 16, 1760)
+    tSM = get_SM_execution_time()
+    print(f"tSM: {tSM}")
+

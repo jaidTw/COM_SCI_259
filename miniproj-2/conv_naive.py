@@ -1,22 +1,23 @@
+#!/usr/bin/env python3
+
 import math
 import csv
+import sys
 
 #Maximum of TFLOPs for Titan V (13.87 TFlops)
-MAXTOPS = 14.0 * 10e12
+MAXTOPS = 13.87 * 10e12
 # Memory Bandwidth for Titan V (653 GB/s)
-MEM_BW = 650 * (2 ** 30)
-# Memory Cloak for Titan V (1.7Gbps)
-MEM_CLOCK = 1.7
-# Cache maxsize for CUDA  (256 MB for Integer/ 4GB for max)
+MEM_BW = 652.8 * (2 ** 30)
+# L2 Cache Size (4608 KB)
 CACHE_MAX = 4608 * (2**10)
 
-Element_size = 2
+DATA_SIZE = 2
 
 FILENAME = 'clean_conv.csv'
 
 W_i, H_i, C_i, B = -1, -1, -1, -1
 W_f, H_f, C_o, PAD, STRI = -1, -1, -1, -1, -1
-W_o, H_o, M, N, K = -1, -1, -1, -1, -1
+W_o, H_o = -1, -1
 
 def conv_comp_time ():
     total_ops = W_f * W_o * H_f * H_o * C_i * C_o * B
@@ -24,56 +25,37 @@ def conv_comp_time ():
 
 def conv_mem_time ():
     total_mem_read  = (W_i * H_i * C_i * B + W_f * H_f * C_o)
-    total_mem_store = (W_o * H_o * C_o * B)
-    total_mem_rw = (total_mem_read + total_mem_store) * Element_size
+    total_mem_write = (W_o * H_o * C_o * B)
+    total_mem_rw = (total_mem_read + total_mem_write) * DATA_SIZE
     return total_mem_rw / MEM_BW
 
 def calculate_time ():
-    compute_time = conv_comp_time() * 10e6
-    memory_time = conv_mem_time() * 10e6
-    max_value = max(compute_time, memory_time)
-    # print ('\t%f' % compute_time, '\t%f' % memory_time, '\t%f' % max(compute_time, memory_time))
-    return max_value
+    return max(conv_comp_time(), conv_mem_time()) * 10e6
 
-def read_parameters(file_name):
+def load_parameters(file_name):
     with open(file_name) as csv_file:
         reader = csv.reader(csv_file)
-        line_count = 0
-        parameters = list (reader)
-    return parameters
+        return list(reader)
 
-def set_parameters (w_i, h_i, c_i, b, w_f, h_f, c_o, padding, stride, w_o, h_o, m, n, k):
-    global W_i, H_i, C_i, B, W_f, H_f, C_o, PAD, STRI, W_o, H_o, M, N, K
+def set_parameters (w_i, h_i, c_i, b, w_f, h_f, c_o, padding, stride, w_o, h_o):
+    global W_i, H_i, C_i, B, W_f, H_f, C_o, PAD, STRI, W_o, H_o
     W_i, H_i, C_i, B = w_i, h_i, c_i, b
     W_f, H_f, C_o, PAD, STRI = w_f, h_f, c_o, padding, stride
-    W_o, H_o, M, N, K = w_o, h_o, m, n, k
+    W_o, H_o = w_o, h_o
 
 if __name__ == '__main__':
-    parameters = read_parameters(FILENAME)
+    if len(sys.argv) < 2:
+        print(f"Usage: {sys.argv[0]} <input>", file=sys.stderr)
+        exit()
 
-    for parameter in parameters:
-        w_i, h_i, c_i, b = int(parameter[0]), int(parameter[1]), int(parameter[2]), int(parameter[3])
-        w_f, h_f, c_o, padding, stride = int(parameter[5]), int(parameter[6]), int(parameter[4]), int(parameter[7]), int(parameter[9])
+    parameters = load_parameters(sys.argv[1])
+
+    print("%5s %5s %4s %3s  %3s %3s %5s %4s %7s %5s %5s  %9s" %
+            ("W_i", "H_i", "C_i", "B", "W_f", "H_f", "C_o", "Pad", "Stride", "W_o", "C_o", "Time (us)"))
+    for row in parameters:
+        w_i, h_i, c_i, b, c_o, w_f, h_f, padding, _, stride = list(map(int, row[:10]))
         w_o = math.floor(w_i + 2 * padding - w_f) / stride
         h_o = math.floor(h_i + 2 * padding - h_f) / stride
-        m = b * h_o * w_o
-        n = c_o
-        k = c_i * h_f * w_f
-        block_m, block_n, block_k = 128, 128, 64
-        set_parameters (w_i, h_i, c_i, b, w_f, h_f, c_o, padding, stride, w_o, h_o, m, n, k)
-        # print (w_i, h_i, c_i, b, w_f, h_f, c_o, padding, stride, w_o, h_o, m, n, k)
-        bound_time = calculate_time()
-
-
-
-    '''w_i, h_i, c_i, b = 700, 161, 1, 32
-    w_f, h_f, c_o, padding, stride = 5, 20, 32, 0, 2
-    w_o = math.floor(w_i + 2 * padding - w_f) / stride
-    h_o = math.floor(h_i + 2 * padding - h_f) / stride
-    m = b * h_o * w_o
-    n = c_o
-    k = c_i * h_f * w_f
-    block_m, block_n, block_k = 128, 128, 64 '''
-
-    # bound_time = calculate_time()
-    # print('Bounded at %f' % bound_time)
+        set_parameters (w_i, h_i, c_i, b, w_f, h_f, c_o, padding, stride, w_o, h_o)
+        exec_time = calculate_time()
+        print("%5d %5d %4d %3d  %3d %3d %5d %4d %7d %5d %5d  %9f" % (w_i, h_i, c_i, b, w_f, h_f, c_o, padding, stride, w_o, h_o, exec_time))

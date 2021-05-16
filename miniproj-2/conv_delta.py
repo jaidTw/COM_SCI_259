@@ -1,37 +1,44 @@
 #!/usr/bin/env python3
 
-import numpy as np
-import csv
 import math
+import csv
+import sys
 
 #Maximum of TFLOPs for Titan V (13.87 TFlops)
-MAXTOPS = 14.0
+MAXTOPS = 13.87 * 10e12
 # Memory Bandwidth for Titan V (653 GB/s)
-MEM_BW = 650
-# Memory Cloak for Titan V (1.7Gbps)
-MEM_CLOCK = 1.7
-# Cache maxsize for CUDA  (256 MB for Integer/ 4GB for max)
-CACHE_MAX = 256 * 1024 * 1024 # TODO: Wrong
-# L2 Cache Bandwidth (67.5 GB/s/SM)
-L1_BW = 67.5 * 1024 * 1024 * 1024
-# L1 Cache Bandwidth (1600 GB/s)
-L2_BW = 1600 * 1024 * 1024 *1024
-# number of SM
+MEM_BW = 652.8 * (2 ** 30)
+# L2 Cache Size (4608 KB)
+L2_SIZE = 4608 * (2**10)
+# L1 Cache Bandwidth (67.5 GB/s/SM)
+L1_BW = 67.5 * 2**30
+# L2 Cache Bandwidth (1600 GB/s)
+L2_BW = 1600 * 2**30
 SM_NUM = 70
 ## Titan V: 2048 (threads) / 32 (warp size) = 64 (number of warp)
-# Size of a Warp
 WARP_SIZE = 32
-# Number of warps
 WARP_NUM = 64
 
-FILENAME = 'conv.csv'
-# block m, block n, block k
+DATA_SIZE = 4
 
 W_i, H_i, C_i, B = -1, -1, -1, -1
 W_f, H_f, C_o, PAD, STRI = -1, -1, -1, -1, -1
 W_o, H_o, M, N, K = -1, -1, -1, -1, -1
 
 BLOCK_m, BLOCK_n, BLOCK_k = -1, -1, -1
+
+def conv_comp_time_naive():
+    total_ops = W_f * W_o * H_f * H_o * C_i * C_o * B
+    return total_ops / MAXTOPS
+
+def conv_mem_time_naive():
+    total_mem_read  = (W_i * H_i * C_i * B + W_f * H_f * C_o)
+    total_mem_write = (W_o * H_o * C_o * B)
+    total_mem_rw = (total_mem_read + total_mem_write) * DATA_SIZE
+    return total_mem_rw / MEM_BW
+
+def calculate_time_naive ():
+    return max(conv_comp_time_naive(), conv_mem_time_naive()) * 10e6
 
 def get_cta_tile_size(c_o):
     if c_o >= 310:
@@ -56,7 +63,6 @@ def get_l1_cache_traffic ():
     MLI_IFmap = (W_i + 2 * PAD) * STRI / (W_i + 2 * PAD - W_f + 1)
     col_elems = WARP_SIZE / BLOCK_k
     MLI_Filter = ((col_elems - 1) * 2 + (8 - (col_elems - 1))) / col_elems
-    print(f"MLI_IFmap: {MLI_IFmap}, MLI_Filter: {MLI_Filter}")
     return M * K * MLI_IFmap + N * K * MLI_Filter
 
 def get_l2_cache_traffic ():
@@ -67,21 +73,17 @@ def get_l2_cache_traffic ():
     Dist_v = BLOCK_m * ratio # vertical distance
     Dist_h = ((BLOCK_k - 1) / W_f) * ((W_i - W_f + 1) + STRI * (W_f - BLOCK_k + 1))
     Dist_h += ((W_f - BLOCK_k + 1) / W_f) * (STRI * (BLOCK_k - 1)) # horizontal distance
-    print(f"DistV: {Dist_v}, DistH: {Dist_h}")
     A_Dist_v = Dist_v * (BLOCK_k / (H_f * W_f))
-    print(BLOCK_k, H_f, W_f)
     h_mul_w = (H_i + 2 * PAD - H_f + 1) / STRI
     A_Dist_h = Dist_h * (1 + (BLOCK_m / (h_mul_w) ** 2))
-    print(f"A_DistV: {A_Dist_v}, A_DistH: {A_Dist_h}")
     CTA_num = (M / BLOCK_m) * (N / BLOCK_n) # ceiling?
-    print(CTA_num)
     conv_layer = 1 # TODO: not sure
     return (abs(A_Dist_v) + abs(A_Dist_h) + BLOCK_k) * (K / BLOCK_k) * (CTA_num / conv_layer)
 
 def get_dram_traffic ():
     T_DRAM_IFmap = B * H_i * W_i * C_i * ((C_o / BLOCK_n)/((C_o / BLOCK_n) * (H_o * W_o * B / BLOCK_m)))
-    T_DRAM_Filter = (C_i * H_f * W_f) * C_o
-    return T_DRAM_IFmap + T_DRAM_Filter
+    T_DRAM_Filter = C_i * H_f * W_f * C_o
+    return (T_DRAM_IFmap + T_DRAM_Filter) * DATA_SIZE
 
 def get_global_load_stream (L1_traffic, L2_traffic, DRAM_traffic):
     # TODO: pipeline latency
@@ -100,8 +102,7 @@ def get_shared_memory_access_stream ():
 
 def get_compute_stream ():
     total_ops = BLOCK_m * BLOCK_n * BLOCK_k
-    # TODO: MAXTOPS -> BW MAC
-    return total_ops / 1
+    return total_ops / MAXTOPS
 
 def get_SM_execution_time():
     tPrologue = 1
@@ -110,12 +111,7 @@ def get_SM_execution_time():
     tDRAM_LAT = 1
     tMEM_BW = 1
 
-
-def calculate_time (m, n, k): 
-    compute_time = mm_comp_time(m, n, k)
-    memory_time = mm_mem_time(m, n, k)
-    max_value = max(compute_time, memory_time)
-    #print ('%d\t%d\t%d\t' % (m, n, k), '\t%f' % compute_time, '\t%f' % memory_time, '\t%f' % max(compute_time, memory_time))
+def calculate_time ():
     return max_value
 
 def set_parameters (w_i, h_i, c_i, b, w_f, h_f, c_o, padding, stride, w_o, h_o, m, n, k):
@@ -128,52 +124,48 @@ def set_parameters (w_i, h_i, c_i, b, w_f, h_f, c_o, padding, stride, w_o, h_o, 
 def load_parameters(file_name):
     with open(file_name) as csv_file:
         reader = csv.reader(csv_file)
-        line_count = 0
-        parameters = list (reader)
-        '''
-        for row in reader:
-            if line_count == 0:
-                print(f'{"    ".join(row)}')
-            #time = calculate_time(int(row["m"]), int(row["n"]), int(row["k"]))
-            print(f'{row["w"]}\t{row["h"]}\t{row["c"]}\t{row["n"]}\t')
-            line_count += 1
-        parameters_dict = {rows[0]:rows[1] for rows in reader}
-        '''
-        # print(data)
-    return parameters
+        return list(reader)
 
 if __name__ == '__main__':
-#    parameters = load_parameters(FILENAME)
-    #print(parameters[1][0])
-    """
-    w_i, h_i, c_i, b = 700, 161, 1, 32
-    w_f, h_f, c_o, padding, stride = 5, 20, 32, 0, 2
-    w_o = math.floor(w_i + 2 * padding - w_f) / stride
-    h_o = math.floor(h_i + 2 * padding - h_f) / stride
-    m = b * h_o * w_o
-    n = c_o
-    k = c_i * h_f * w_f
-    """
-    w_i, h_i, c_i, b = 700, 161, 3, 2
-    w_f, h_f, c_o, padding, stride = 3, 3, 2, 1, 1
-    w_o = math.floor(w_i + 2 * padding - w_f) / stride
-    h_o = math.floor(h_i + 2 * padding - h_f) / stride
-    m = b * h_o * w_o
-    n = c_o
-    k = c_i * h_f * w_f
-    
-    set_parameters(w_i, h_i, c_i, b, w_f, h_f, c_o, padding, stride, w_o, h_o, m, n, k)
+    if len(sys.argv) < 2:
+        print(f"Usage: {sys.argv[0]} <input>", file=sys.stderr)
+        exit()
 
-    L1_Traffic = get_l1_cache_traffic()
-    L2_Traffic = get_l2_cache_traffic()
-    DRAM_Traffic = get_dram_traffic()
-    
-    tGLS = get_global_load_stream(L1_Traffic, L2_Traffic, DRAM_Traffic)
-    tSAS = get_shared_memory_access_stream()
-    tCS = get_compute_stream()
+    parameters = load_parameters(sys.argv[1])
 
-    print(f"tGLS: {tGLS}, tSAS: {tSAS}, tCS: {tCS}")
+    RMSE_error_naive = 0
+    RMSE_error_l1 = 0
+    print("%5s %5s %4s %3s  %3s %3s %5s %4s %7s %5s %5s  %10s %5s %10s %5s" %
+            ("W_i", "H_i", "C_i", "B", "W_f", "H_f", "C_o", "Pad", "Stride", "W_o", "C_o", "Naive (us)", "err", "L1 (us)", "err"))
+    for row in parameters:
+        w_i, h_i, c_i, b, c_o, w_f, h_f, padding, _, stride = list(map(int, row[:10]))
+        real_time = float(row[15])
+        w_o = math.floor(w_i + 2 * padding - w_f) / stride
+        h_o = math.floor(h_i + 2 * padding - h_f) / stride
+        m = b * h_o * w_o
+        n = c_o
+        k = c_i * h_f * w_f
+        
+        set_parameters(w_i, h_i, c_i, b, w_f, h_f, c_o, padding, stride, w_o, h_o, m, n, k)
+        exec_time = calculate_time_naive()
 
-    tSM = get_SM_execution_time()
-    print(f"tSM: {tSM}")
+        L1_Traffic = get_l1_cache_traffic()
+        L2_Traffic = get_l2_cache_traffic()
+        DRAM_Traffic = get_dram_traffic()
+#        print("%15.4f, %15.4f, %15.4f, %15.4f"% (L1_Traffic/L1_BW*10e6, L2_Traffic/L2_BW*10e6, DRAM_Traffic/MEM_BW*10e6, conv_mem_time_naive()*10e6))
+        normal_l1 = L1_Traffic / (L1_BW * SM_NUM)
+        normal_l2 = L2_Traffic / L2_BW
+        normal_dram = DRAM_Traffic / MEM_BW
+        l1_time = L1_Traffic / MEM_BW * 10e6
+
+        error_naive = abs((real_time - exec_time) / real_time)
+        error_l1 = abs((real_time - l1_time) / real_time)
+        RMSE_error_naive += (real_time - exec_time) ** 2
+        RMSE_error_l1 += (real_time - l1_time) ** 2
+
+        print("%5d %5d %4d %3d  %3d %3d %5d %4d %7d %5d %5d  %10.4f %5.3f %10.4f %5.3f" % (w_i, h_i, c_i, b, w_f, h_f, c_o, padding, stride, w_o, h_o, exec_time, error_naive, l1_time, error_l1))
+    RMSE_error_naive = (RMSE_error_naive / len(parameters)) ** 0.5
+    RMSE_error_l1 = (RMSE_error_l1 / len(parameters)) ** 0.5
+    print(f"RMSE naive: {RMSE_error_naive}")
+    print(f"RMSE L1: {RMSE_error_l1}")
 

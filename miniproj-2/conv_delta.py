@@ -135,8 +135,9 @@ if __name__ == '__main__':
 
     RMSE_error_naive = 0
     RMSE_error_l1 = 0
-    print("%5s %5s %4s %3s  %3s %3s %5s %4s %7s %5s %5s  %10s %5s %10s %5s" %
-            ("W_i", "H_i", "C_i", "B", "W_f", "H_f", "C_o", "Pad", "Stride", "W_o", "C_o", "Naive (us)", "err", "L1 (us)", "err"))
+    print("%3s %5s %5s %4s %3s  %3s %3s %5s %4s %7s %5s %5s  %10s %5s %10s %5s" %
+            ("i", "W_i", "H_i", "C_i", "B", "W_f", "H_f", "C_o", "Pad", "Stride", "W_o", "C_o", "Naive (us)", "err", "L1 (us)", "err"))
+    i=1
     for row in parameters:
         w_i, h_i, c_i, b, c_o, w_f, h_f, padding, _, stride = list(map(int, row[:10]))
         real_time = float(row[15])
@@ -158,12 +159,13 @@ if __name__ == '__main__':
         normal_dram = DRAM_Traffic / MEM_BW
         l1_time = L1_Traffic / MEM_BW * 10e6
 
-        error_naive = abs((real_time - exec_time) / real_time)
-        error_l1 = abs((real_time - l1_time) / real_time)
+        error_naive = abs((real_time - exec_time) / real_time) * 100
+        error_l1 = abs((real_time - l1_time) / real_time) * 100
         RMSE_error_naive += (real_time - exec_time) ** 2
         RMSE_error_l1 += (real_time - l1_time) ** 2
+        print("%3d %5d %5d %4d %3d  %3d %3d %5d %4d %7d %5d %5d  %10.4f %5.1f %10.4f %5.1f" % (i, w_i, h_i, c_i, b, w_f, h_f, c_o, padding, stride, w_o, h_o, exec_time, error_naive, l1_time, error_l1))
+        i += 1
 
-        print("%5d %5d %4d %3d  %3d %3d %5d %4d %7d %5d %5d  %10.4f %5.3f %10.4f %5.3f" % (w_i, h_i, c_i, b, w_f, h_f, c_o, padding, stride, w_o, h_o, exec_time, error_naive, l1_time, error_l1))
     RMSE_error_naive = (RMSE_error_naive / len(parameters)) ** 0.5
     RMSE_error_l1 = (RMSE_error_l1 / len(parameters)) ** 0.5
     print(f"RMSE naive: {RMSE_error_naive}")

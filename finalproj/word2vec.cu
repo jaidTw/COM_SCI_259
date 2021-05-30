@@ -121,7 +121,7 @@ long long train_words = 0, word_count_actual = 0, iter = 5, file_size = 0, class
  * Set 'sample' to 0 to disable subsampling.
  * See the comments in the subsampling section for more details.
  */
-real alpha = 0.025, starting_alpha, sample = 1e-3;
+float alpha = 0.025, starting_alpha, sample = 1e-3;
 
 /*
  * IMPORTANT - Note that the weight matrices are stored as 1D arrays, not
@@ -139,12 +139,19 @@ real alpha = 0.025, starting_alpha, sample = 1e-3;
  * ======== expTable ========
  * Stores precalcultaed activations for the output layer.
  */
-real *syn0, *syn1, *syn1neg, *expTable;
+float *syn0, *syn1, *syn1neg, *expTable;
 clock_t start;
 
 int hs = 0, negative = 5;
 const int table_size = 1e8;
 int *table;
+
+
+// CUDA Init
+int *vocab_codeleng, *vocab_point, *d_vocab_codeleng, *d_vocab_point;
+int *d_table;
+char *vocab_code, d_vocab_code;
+float  *d_syn0, *d_syn1, *d_expTable;
 
 /**
  * ======== InitUnigramTable ========
@@ -446,6 +453,97 @@ void ReduceVocab() {
   }
   fflush(stdout);
   min_reduce++;
+}
+
+// Main execution for cbow model
+__global__ void cbow_exec(int window, int layer1_size, int negative, int hs, int table_size, 
+	int vocab_size, float alpha, const float* expTable, const int* table, 
+	const int* vocab_codelen, const int* vocab_point, const char* vocab_code,
+	const int* sen, const int* sentence_length, float* syn1, float* syn0)
+{
+  __shared__ float f, g;
+  // init for sentence index using blockIdx
+  int sent_idx_s = sentence_length[blockIdx.x];
+  int sent_idx_e = sentence_length[blockIdx.x + 1];
+  unsigned long next_random = blockIdx.x;
+  
+  if(threadIdx.x < layer1_size) for(int sentence_position = sent_idx_s; sentence_position < sent_idx_e; sentence_position++){
+    int word = sen[sentence_position];
+    if(word == -1) continue;
+    
+    float neu1 = 0;
+    float neu1e = 0;
+    next_random = next_random * (unsigned long)2514903917 + 11;
+    int b = next_random % window;
+    int cw = 0;
+    for (a = b; a < window * 2 + 1 - b; a++) if (a != window) {
+      int c = sentence_position - window + a;
+        
+      // Verify c isn't outisde the bounds of the sentence.
+      if (c < 0) continue;
+      if (c >= sentence_length) continue;
+      last_word = sen[c];
+      if (last_word == -1) continue;
+      // TODO Not sure here
+      neu1 += syn0[threadIdx.x + last_word * layer1_size];
+      cw++;
+    }
+    if(cw){
+      // neu1 was the sum of the context word vectors, and now becomes
+      // their average. 
+      neu1 /= cw;
+
+      // HS Phase
+      if(hs) for(int d = vocab_codelen[word]; d < vocab_codelen[word+1]; d++){
+        int l2 =  vocab_point[d] * layer1_size;
+        f = 0;
+        f += neu1 * syn1[threadIdx.x + l2];
+        __syncthreads();
+
+        // Apply the sigmoid activation to the current output neuron.
+        if (f <= -MAX_EXP) continue;
+        else if (f >= MAX_EXP) continue;
+        else f = expTable[(int)((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))];
+        g = (1 - vocab[word].code[d] - f) * alpha;
+        
+        neu1e += g * syn1[threadIdx.x + l2];
+        // Atomic addition for threads
+        atomicAdd(&syn1[threadIdx.x + l2], g * neu1);
+      }
+      if(negative > 0) for (int d = 0; d < negative + 1; d++) {
+        int target , label;
+        if(d == 0){
+          target = word;
+          label = 1;
+        }else{
+          next_random = next_random * (unsigned long long)25214903917 + 11;
+          target = table[(next_random >> 16) % table_size];
+          if (target == 0) target = next_random % (vocab_size - 1) + 1;
+          if (target == word) continue;
+          label = 0;
+        }
+        int l2 = target * layer1_size;
+        f = 0; // not sure
+        f += neu1 * syn1[threadIdx.x + l2]; // should split with thead or not?   
+        __syncthreads();
+        if (f > MAX_EXP) g = (label - 1) * alpha;
+        else if (f < -MAX_EXP) g = (label - 0) * alpha;
+        else g = (label - expTable[(int)((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))]) * alpha;
+        neu1e += g * syn1[l2 + threadIdx.x];
+        // Atomic addition for threads
+        atomicAdd(&syn1[threadIdx.x + l2], g * neu1);
+      }
+     for (a = b; a < window * 2 + 1 - b; a++) if (a != window) {
+       int c = sentence_position - window + a;
+       if(c < sent_idx_s) continue;
+       if(c >= sent_idx_e) continue;
+       int last_word = sen[c];
+       if (last_word == -1) continue;
+       // Atomic addition for threads
+       atomicAdd(&syn0[threadIdx.x + last_word * layer1_size], g * neu1e);
+     } 
+    }
+  }  
 }
 
 /**

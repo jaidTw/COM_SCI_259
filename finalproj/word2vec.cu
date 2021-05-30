@@ -148,9 +148,9 @@ int *table;
 
 
 // CUDA Init
-int *vocab_codeleng, *vocab_point, *d_vocab_codeleng, *d_vocab_point;
+int *vocab_codelen, *vocab_point, *d_vocab_codelen, *d_vocab_point;
 int *d_table;
-char *vocab_code, d_vocab_code;
+char *vocab_code, *d_vocab_code;
 float  *d_syn0, *d_syn1, *d_expTable;
 
 /**
@@ -231,7 +231,6 @@ void ReadWord(char *word, FILE *fin) {
   
   // Read until the end of the word or the end of the file.
   while (!feof(fin)) {
-  
     // Get the next character.
     ch = fgetc(fin);
     
@@ -616,6 +615,32 @@ __global__ void skipgram_exec(int window, int layer1_size, int negative, int hs,
       atomicAdd(&syn0[threadIdx.x + l1], neu1e);
     }
   }
+}
+
+// CUDA Structure allocation
+void initVocabCuda(){
+  vocab_codelen = (int*)malloc((vocab_size+1) * sizeof(int));
+  vocab_codelen[0] = 0;
+  for(int i = 1; i <= vocab_size; i++){
+    vocab_codelen[i] = vocab_codelen[i-1]+vocab[i-1].codelen;
+    // global codelen struct getting vocab information for cuda sync
+  }
+  vocab_point = (int*)malloc(vocab_codelen[vocab_size] * sizeof(int));
+  vocab_code = (char*)malloc(vocab_codelen[vocab_size] * sizeof(char));
+
+  cudaMalloc((void **)&d_vocab_codelen, (vocab_size+1) * sizeof(int));
+  cudaMalloc((void **)&d_vocab_point, vocab_codelen[vocab_size] * sizeof(int));
+  cudaMalloc((void **)&d_vocab_code, vocab_codelen[vocab_size] * sizeof(char));
+  
+  for(int i=0; i < vocab_size; i++){
+    for(int j = 0; j < vocab_size; j++){
+      vocab_point[vocab_codelen[i]+j] = vocab[i].point[j];
+      vocab_code[vocab_codelen[i]+j] = vocab[i].code[j];
+    }
+  }
+  cudaMemcpy(d_vocab_codelen, vocab_codelen, (vocab_size+1) * sizeof(int), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_vocab_point, vocab_point, vocab_codelen[vocab_size] * sizeof(int), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_vocab_code, vocab_code, vocab_codelen[vocab_size] * sizeof(char), cudaMemcpyHostToDevice);
 }
 
 

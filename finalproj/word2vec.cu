@@ -480,8 +480,8 @@ __global__ void cbow_exec(int window, int layer1_size, int negative, int hs, int
       int c = sentence_position - window + a;
         
       // Verify c isn't outisde the bounds of the sentence.
-      if (c < 0) continue;
-      if (c >= sentence_length) continue;
+      if (c < sent_idx_s) continue;
+      if (c >= sent_idx_e) continue;
       last_word = sen[c];
       if (last_word == -1) continue;
       // TODO Not sure here
@@ -545,6 +545,78 @@ __global__ void cbow_exec(int window, int layer1_size, int negative, int hs, int
     }
   }  
 }
+
+// Skip gram execution, not sure if should create f array for each thread or not
+__global__ void skipgram_exec(int window, int layer1_size, int negative, int hs, int table_size, 
+	int vocab_size, float alpha, const float* expTable, const int* table, 
+	const int* vocab_codelen, const int* vocab_point, const char* vocab_code,
+	const int* sen, const int* sentence_length, float* syn1, float* syn0)
+{
+  __shared__ float f, g;
+  // init for sentence index using blockIdx
+  int sent_idx_s = sentence_length[blockIdx.x];
+  int sent_idx_e = sentence_length[blockIdx.x + 1];
+  unsigned long next_random = blockIdx.x;
+  if(threadIdx.x < layer1_size) for(int sentence_position = sent_idx_s; sentence_position < sent_idx_e; sentence_position++){
+    int word = sen[sentence_position];
+    if(word == -1) continue;
+    
+    float neu1e = 0;
+    next_random = next_random * (unsigned long)2514903917 + 11;
+    int b = next_random % window;
+    
+    for (a = b; a < window * 2 + 1 - b; a++) if (a != window) {
+      int c = sentence_position - window + a;
+      if (c < sent_idx_s) continue;
+      if (c >= sent_idx_e) continue;
+      last_word = sen[c];
+      if (last_word == -1) continue;
+      // TODO Not sure here
+      int l1 = last_word * layer1_size;
+      neu1e = 0;
+      
+      //HS
+      if(hs) for(int d = vocab_codelen[word]; d < vocab_codelen[word+1]; d++){
+        f = 0;
+        int l2 = vocab_point[d] * layer1_size;
+        f = syn0[threadIdx.x + l1] * syn1[threadIdx.x + l2];
+        __syncthreads();
+        if (f <= -MAX_EXP) continue;
+        else if (f >= MAX_EXP) continue;
+        else f = expTable[(int)((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))];
+        neu1e += g * syn1[threadIdx.x + l2];
+        atomicAdd(&syn1[threadIdx.x + l2], g * syn0[threadIdx.x + l1]);
+      }
+      
+      // Negative Sampling
+      if(negative > 0) for (int d = 0; d < negative + 1; d++) {
+        if(d == 0){
+          target = word;
+          label = 1;
+        }else{
+          next_random = next_random * (unsigned long long)25214903917 + 11;
+          target = table[(next_random >> 16) % table_size];
+          if (target == 0) target = next_random % (vocab_size - 1) + 1;
+          if (target == word) continue;
+          label = 0;
+        }
+        int l2 = target * layer1_size;
+        f = 0; 
+        f = syn0[threadIdx.x +l1] * syn1[threadIdx.x + l2];//should use syn1neg?
+        __syncthreads();
+
+        if (f > MAX_EXP) g = (label - 1) * alpha;
+        else if (f < -MAX_EXP) g = (label - 0) * alpha;
+        else g = (label - expTable[(int)((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))]) * alpha;
+        
+        neu1e += g * syn1[threadIdx.x + l2];
+        atomicAdd(&syn1[threadIdx.x + l2], g * syn0[threadIdx.x + l1]);
+      }
+      atomicAdd(&syn0[threadIdx.x + l1], neu1e);
+    }
+  }
+}
+
 
 /**
  * ======== CreateBinaryTree ========

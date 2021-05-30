@@ -476,13 +476,13 @@ __global__ void cbow_exec(int window, int layer1_size, int negative, int hs, int
     next_random = next_random * (unsigned long)2514903917 + 11;
     int b = next_random % window;
     int cw = 0;
-    for (a = b; a < window * 2 + 1 - b; a++) if (a != window) {
+    for(int a = b; a < window * 2 + 1 - b; a++) if (a != window) {
       int c = sentence_position - window + a;
         
       // Verify c isn't outisde the bounds of the sentence.
       if (c < sent_idx_s) continue;
       if (c >= sent_idx_e) continue;
-      last_word = sen[c];
+      int last_word = sen[c];
       if (last_word == -1) continue;
       // TODO Not sure here
       neu1 += syn0[threadIdx.x + last_word * layer1_size];
@@ -504,7 +504,7 @@ __global__ void cbow_exec(int window, int layer1_size, int negative, int hs, int
         if (f <= -MAX_EXP) continue;
         else if (f >= MAX_EXP) continue;
         else f = expTable[(int)((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))];
-        g = (1 - vocab[word].code[d] - f) * alpha;
+        g = (1 - vocab_code[d] - f) * alpha;
         
         neu1e += g * syn1[threadIdx.x + l2];
         // Atomic addition for threads
@@ -533,7 +533,7 @@ __global__ void cbow_exec(int window, int layer1_size, int negative, int hs, int
         // Atomic addition for threads
         atomicAdd(&syn1[threadIdx.x + l2], g * neu1);
       }
-     for (a = b; a < window * 2 + 1 - b; a++) if (a != window) {
+     for(int a = b; a < window * 2 + 1 - b; a++) if (a != window) {
        int c = sentence_position - window + a;
        if(c < sent_idx_s) continue;
        if(c >= sent_idx_e) continue;
@@ -565,11 +565,11 @@ __global__ void skipgram_exec(int window, int layer1_size, int negative, int hs,
     next_random = next_random * (unsigned long)2514903917 + 11;
     int b = next_random % window;
     
-    for (a = b; a < window * 2 + 1 - b; a++) if (a != window) {
+    for (int a = b; a < window * 2 + 1 - b; a++) if (a != window) {
       int c = sentence_position - window + a;
       if (c < sent_idx_s) continue;
       if (c >= sent_idx_e) continue;
-      last_word = sen[c];
+      int last_word = sen[c];
       if (last_word == -1) continue;
       // TODO Not sure here
       int l1 = last_word * layer1_size;
@@ -590,6 +590,7 @@ __global__ void skipgram_exec(int window, int layer1_size, int negative, int hs,
       
       // Negative Sampling
       if(negative > 0) for (int d = 0; d < negative + 1; d++) {
+        int target, label;
         if(d == 0){
           target = word;
           label = 1;
